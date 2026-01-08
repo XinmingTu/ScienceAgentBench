@@ -162,6 +162,11 @@ def parse_args():
         default=4,
         help="Maximum parallel workers for evaluation (default: 4)",
     )
+    parser.add_argument(
+        "--force_reeval",
+        action="store_true",
+        help="Force re-evaluation even if results already exist",
+    )
 
     return parser.parse_args()
 
@@ -173,6 +178,8 @@ def run_evaluation(
     run_id: str,
     instance_ids: list,
     max_workers: int,
+    force_reeval: bool = False,
+    task_log_dir: str = None,
 ):
     """
     Run evaluation using the existing ScienceAgentBench harness.
@@ -184,6 +191,8 @@ def run_evaluation(
         run_id: Run identifier
         instance_ids: List of instance IDs to evaluate (or None for all)
         max_workers: Number of parallel workers
+        force_reeval: Force re-evaluation even if results already exist
+        task_log_dir: Directory for per-task logs
     """
     # Import here to avoid circular imports and make evaluation optional
     try:
@@ -194,6 +203,8 @@ def run_evaluation(
 
     print(f"\n{'='*60}")
     print("Starting evaluation phase...")
+    if force_reeval:
+        print("Force re-evaluation enabled")
     print(f"{'='*60}\n")
 
     eval_main(
@@ -215,6 +226,8 @@ def run_evaluation(
         azure_openai_api_version=os.environ.get("AZURE_OPENAI_API_VERSION", ""),
         azure_openai_endpoint=os.environ.get("AZURE_OPENAI_ENDPOINT", ""),
         azure_openai_deployment_name=os.environ.get("AZURE_OPENAI_DEPLOYMENT_NAME", ""),
+        force_reeval=force_reeval,
+        task_log_dir=task_log_dir,
     )
 
 
@@ -365,9 +378,11 @@ def main():
             run_id=args.run_id,
             instance_ids=args.instance_ids,
             max_workers=args.max_eval_workers,
+            force_reeval=args.force_reeval,
+            task_log_dir=str(log_dir),
         )
 
-        # Save evaluation results to per-task directories
+        # Save evaluation results to per-task directories (backup in case harness didn't write them)
         logger.info("Saving evaluation results to per-task directories...")
         _save_per_task_eval_results(args.eval_log_fname, log_dir, dataset)
 

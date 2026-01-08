@@ -42,9 +42,13 @@ def compute_scores(example, eval_program_path, pred_program_path, gold_program_p
     if exec_res.returncode != 0:
         return 0, cbs, 0, exec_res.stderr.decode("utf-8")
     
-    if not Path(example['output_fname']).exists():
-        return 0, cbs, 0, "The program does not save its output correctly."
-    # 
+    output_path = Path(example['output_fname'])
+    if not output_path.exists():
+        return 0, cbs, 0, f"Output file not found: {output_path}"
+    if output_path.stat().st_size == 0:
+        return 0, cbs, 0, f"Output file is empty: {output_path}"
+    print(f"[DEBUG] Output file verified: {output_path} ({output_path.stat().st_size} bytes)")
+
     # Run evaluation script
     eval_fname = str(Path(eval_program_path, example['eval_script_name']))
     eval_fname = os.path.relpath(eval_fname, "/testbed")
@@ -65,8 +69,13 @@ def compute_scores(example, eval_program_path, pred_program_path, gold_program_p
 
 def main():
     instance_path = Path('/testbed/instance_path')
-    if os.path.exists("pred_results"):
-        shutil.rmtree("pred_results")
+
+    # Safely handle existing pred_results symlink or directory
+    pred_results_link = Path("pred_results")
+    if pred_results_link.is_symlink():
+        pred_results_link.unlink()  # Remove symlink, not target
+    elif pred_results_link.exists():
+        shutil.rmtree(pred_results_link)
     os.symlink(instance_path / "pred_results", "pred_results")
     
     # 

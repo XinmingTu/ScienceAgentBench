@@ -58,6 +58,7 @@ def run_instance(
         client: docker.DockerClient,
         run_id: str,
         timeout: int | None = None,
+        force_reeval: bool = False,
     ):
     """
     Run a single instance with the given prediction.
@@ -70,6 +71,7 @@ def run_instance(
         client (docker.DockerClient): Docker client
         run_id (str): Run ID
         timeout (int): Timeout for running tests
+        force_reeval (bool): Force re-evaluation even if report exists
     """
     # Set up logging directory
     instance_id = test_spec.instance_id
@@ -94,7 +96,7 @@ def run_instance(
 
     # Set up report file + logger
     report_path = log_dir / "report.json"
-    if report_path.exists():
+    if not force_reeval and report_path.exists():
         return instance_id, json.loads(report_path.read_text())
     logger = setup_logger(instance_id, log_file)
 
@@ -147,6 +149,7 @@ def run_instances(
         max_workers: int,
         run_id: str,
         timeout: int,
+        force_reeval: bool = False,
     ):
     """
     Run all instances for the given predictions in parallel.
@@ -160,6 +163,7 @@ def run_instances(
         max_workers (int): Maximum number of workers
         run_id (str): Run ID
         timeout (int): Timeout for running tests
+        force_reeval (bool): Force re-evaluation even if results exist
     """
     client = docker.from_env()
     # test_specs = list(map(make_test_spec, examples))
@@ -194,6 +198,7 @@ def run_instances(
                     client,
                     run_id,
                     timeout,
+                    force_reeval,
                 ): None
                 for test_spec in test_specs
             }
@@ -223,6 +228,42 @@ def get_gold_predictions(dataset_name: str, split: str):
     ]
 
 
+def save_per_task_result(task_log_dir: str, instance_id: str, result):
+    """Write evaluation.json and PASSED/FAILED marker to task directory."""
+    task_dir = Path(task_log_dir) / "tasks" / str(instance_id)
+    task_dir.mkdir(parents=True, exist_ok=True)
+
+    # Handle both dict and tuple/list result formats
+    if isinstance(result, (list, tuple)):
+        # Convert tuple format: (valid_program, codebert_score, success_rate, log_info)
+        result_with_id = {
+            "valid_program": result[0],
+            "codebert_score": result[1],
+            "success_rate": result[2],
+            "log_info": result[3] if len(result) > 3 else None,
+            "instance_id": str(instance_id)
+        }
+        success = result[2] == 1
+    else:
+        # Dict format
+        result_with_id = dict(result)
+        result_with_id["instance_id"] = str(instance_id)
+        success = result.get("success_rate", 0) == 1
+
+    # Write evaluation.json
+    with open(task_dir / "evaluation.json", "w") as f:
+        json.dump(result_with_id, f, indent=2)
+
+    # Create status marker
+    marker = task_dir / ("PASSED" if success else "FAILED")
+    marker.touch()
+
+    # Remove opposite marker if exists
+    other = task_dir / ("FAILED" if success else "PASSED")
+    if other.exists():
+        other.unlink()
+
+
 def main(
         benchmark_path: str,
         pred_program_path: str,
@@ -242,10 +283,18 @@ def main(
         azure_openai_api_version: str,
         azure_openai_endpoint: str,
         azure_openai_deployment_name: str,
+        force_reeval: bool = False,
+        task_log_dir: str = None,
     ):
     """
     Run evaluation harness for the given dataset and predictions.
     """
+    # Auto-derive task_log_dir from log_fname if not provided
+    if task_log_dir is None:
+        task_log_dir = str(Path(log_fname).parent)
+
+    if force_reeval:
+        print("Force re-evaluation enabled - will re-run all specified instances")
 
     # set up paths: This needs to be put into docker, otherwise examples would interfere with each other
     # result_path = Path(args.result_path)
@@ -304,7 +353,8 @@ def main(
     evaluated_indices = set()
     evaluated_logs = [None] * num_instances
 
-    if Path(log_fname).exists():
+    # Only load existing logs if not forcing re-evaluation
+    if not force_reeval and Path(log_fname).exists():
         with open(log_fname, "r", encoding="utf-8") as log_f:
             for idx, line in enumerate(log_f):
                 line = line.strip()
@@ -315,7 +365,7 @@ def main(
     if instance_ids is None:
         instance_ids = []
     instance_ids = set(instance_ids)
-    
+
     instance_id_to_idx = {}
     idx_to_instance_id = {}
     examples_to_run = []
@@ -325,11 +375,13 @@ def main(
         instance_id_to_idx[instance_id] = idx
         idx_to_instance_id[idx] = instance_id
         if len(instance_ids) == 0:
-            if idx not in evaluated_indices:
+            # Run all instances if no specific IDs provided
+            if force_reeval or idx not in evaluated_indices:
                 examples_to_run.append(example)
         else:
+            # Run only specified instances
             if instance_id in instance_ids:
-                if not idx in evaluated_indices:
+                if force_reeval or idx not in evaluated_indices:
                     examples_to_run.append(example)
                 else:
                     print(f"Instance {instance_id} has already been evaluated. Skipped.")
@@ -360,7 +412,7 @@ def main(
         else:
             # build environment images + run instances
             build_base_images(client, examples_to_run, benchmark_path, pred_program_path, force_rebuild)
-            run_instances(examples_to_run, benchmark_path, pred_program_path, cache_level, clean, force_rebuild, max_workers, run_id, timeout)
+            run_instances(examples_to_run, benchmark_path, pred_program_path, cache_level, clean, force_rebuild, max_workers, run_id, timeout, force_reeval)
     finally:
         import time
         time.sleep(2)  # for all threads to finish so that we can save the result file correctly
@@ -373,8 +425,19 @@ def main(
                 with open(result_file_path, "r") as f:
                     output = json.load(f)
                 evaluated_logs[instance_id_to_idx[instance_id]] = output
+                # Write per-task result
+                if task_log_dir:
+                    save_per_task_result(task_log_dir, instance_id, output)
             else:
                 num_failed += 1
+                # Write failure marker for failed evaluations
+                if task_log_dir:
+                    save_per_task_result(task_log_dir, instance_id, {
+                        "valid_program": 0,
+                        "codebert_score": 0.0,
+                        "success_rate": 0,
+                        "log_info": "Evaluation failed - no result file"
+                    })
         
         # Create the directory for log file if it doesn't exist
 
@@ -446,7 +509,7 @@ if __name__ == "__main__":
     parser.add_argument("--split", type=str, default="validation", help="Split of the dataset")
     parser.add_argument("--dataset_name", type=str, default="osunlp/ScienceAgentBench", help="Dataset name")
     parser.add_argument("--instance_ids", nargs="+", type=str, help="Instance IDs to run (space separated)")
-    parser.add_argument("--max_workers", type=int, default=4, help="Maximum number of workers (should be <= 75%% of CPU cores)")
+    parser.add_argument("--max_workers", type=int, default=8, help="Maximum number of workers (should be <= 75%% of CPU cores)")
     parser.add_argument("--open_file_limit", type=int, default=4096, help="Open file limit")
     parser.add_argument(
         "--timeout", type=int, default=1_800, help="Timeout (in seconds) for running tests for each instance"
@@ -472,6 +535,14 @@ if __name__ == "__main__":
     parser.add_argument('--azure_openai_api_version', type=str, default='')
     parser.add_argument('--azure_openai_endpoint', type=str, default='')
     parser.add_argument('--azure_openai_deployment_name', type=str, default='')
+    parser.add_argument(
+        "--force_reeval", type=str2bool, default=False,
+        help="Force re-evaluation even if results already exist"
+    )
+    parser.add_argument(
+        "--task_log_dir", type=str, default=None,
+        help="Directory for per-task logs (auto-derived from log_fname if not set)"
+    )
 
     args = parser.parse_args()
     print(args)

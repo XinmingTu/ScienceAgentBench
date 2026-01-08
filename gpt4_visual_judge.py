@@ -1,6 +1,6 @@
 """
 Visual judge for evaluating generated plots against ground truth.
-Supports both GPT-4 (OpenAI/Azure) and Gemini 2.0 Flash.
+Supports both GPT-4 (OpenAI/Azure) and Gemini 3 Flash Preview.
 
 Adapted from: https://github.com/thunlp/MatPlotAgent/blob/66864d9ae095a281b8c1811602b4a196d642efa9/evaluation/api_eval.py
 """
@@ -8,10 +8,11 @@ Adapted from: https://github.com/thunlp/MatPlotAgent/blob/66864d9ae095a281b8c181
 import os
 import base64
 import re
-from dotenv import load_dotenv
-
-# Load environment variables from .env file
-load_dotenv()
+try:
+    from dotenv import load_dotenv
+    load_dotenv()
+except ImportError:
+    pass  # In Docker, env vars are set via Dockerfile ENV directives
 
 # Determine which provider to use based on available API keys
 USE_GEMINI = bool(os.getenv("GOOGLE_API_KEY"))
@@ -51,10 +52,14 @@ After scoring from the above aspect, please give a final score. The final score 
 
 def encode_image(image_path):
     with open(image_path, "rb") as image_file:
-        return base64.b64encode(image_file.read()).decode('utf-8')
+        data = image_file.read()
+        print(f"[DEBUG] encode_image({image_path}): {len(data)} bytes")
+        if len(data) == 0:
+            raise ValueError(f"Empty file: {image_path}")
+        return base64.b64encode(data).decode('utf-8')
 
 def _score_figure_gemini(pred_fig, gold_fig):
-    """Score figures using Gemini 2.0 Flash."""
+    """Score figures using Gemini 3 Flash Preview."""
     import PIL.Image
     import io
 
@@ -62,18 +67,27 @@ def _score_figure_gemini(pred_fig, gold_fig):
     pred_bytes = base64.b64decode(pred_fig)
     gold_bytes = base64.b64decode(gold_fig)
 
+    print(f"[DEBUG] Gemini scoring - pred_fig: {len(pred_bytes)} bytes, gold_fig: {len(gold_bytes)} bytes")
+
     pred_image = PIL.Image.open(io.BytesIO(pred_bytes))
     gold_image = PIL.Image.open(io.BytesIO(gold_bytes))
 
     # Gemini doesn't support n=3, so we call 3 times
     full_responses = []
     for _ in range(3):
+        # Use explicit labels to ensure correct image order interpretation
         response = gemini_client.models.generate_content(
-            model="gemini-2.0-flash",
-            contents=[PROMPT_ORIGIN, pred_image, gold_image],
+            model="gemini-3-flash-preview",
+            contents=[
+                PROMPT_ORIGIN,
+                "--- FIGURE 1 (Generated/Predicted Plot) ---",
+                pred_image,
+                "--- FIGURE 2 (Ground Truth/Reference Plot) ---",
+                gold_image,
+            ],
             config=types.GenerateContentConfig(
                 temperature=0.2,
-                max_output_tokens=1000,
+                max_output_tokens=8192,
             )
         )
         full_responses.append(response.text)
@@ -101,7 +115,7 @@ def _score_figure_openai(pred_fig, gold_fig):
             }
         ],
         "temperature": 0.2,
-        "max_tokens": 1000,
+        "max_tokens": 8192,
         "n": 3,
         "top_p": 0.95,
         "frequency_penalty": 0,
