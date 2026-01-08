@@ -34,7 +34,48 @@ from .utils import (
     load_existing_logs,
     append_log,
     str2bool,
+    save_task_info,
+    save_inference_result,
+    save_evaluation_result,
+    save_conversation_log,
+    check_task_completed,
+    get_task_status_summary,
 )
+
+import json
+
+
+def _save_per_task_eval_results(eval_log_fname: str, log_dir: Path, dataset):
+    """
+    Map evaluation results from summary JSONL to per-task directories.
+
+    The evaluation harness writes results in line-order matching HuggingFace
+    dataset indices. This function maps them to instance_ids and writes
+    per-task evaluation.json files with PASSED/FAILED markers.
+
+    Args:
+        eval_log_fname: Path to the evaluation summary JSONL file
+        log_dir: Base log directory for per-task logs
+        dataset: HuggingFace dataset for instance_id mapping
+    """
+    eval_path = Path(eval_log_fname)
+    if not eval_path.exists():
+        return
+
+    # Build index to instance_id mapping
+    idx_to_instance_id = {idx: str(ex['instance_id']) for idx, ex in enumerate(dataset)}
+
+    # Read evaluation results and save to per-task directories
+    with open(eval_path, 'r') as f:
+        for idx, line in enumerate(f):
+            if line.strip() and idx in idx_to_instance_id:
+                result = json.loads(line)
+                # Skip placeholder entries that weren't actually evaluated
+                if result.get("log_info") == "default log info":
+                    continue
+                instance_id = idx_to_instance_id[idx]
+                result["instance_id"] = instance_id
+                save_evaluation_result(log_dir, instance_id, result)
 
 
 def parse_args():
@@ -181,10 +222,15 @@ def main():
     """Main entry point for Claude Code evaluation."""
     args = parse_args()
 
-    # Setup logging
-    log_dir = Path(args.log_fname).parent
-    if not log_dir.exists():
-        log_dir.mkdir(parents=True, exist_ok=True)
+    # Setup logging - ensure log directory exists
+    log_fname_path = Path(args.log_fname)
+    if log_fname_path.parent == Path(".") or str(log_fname_path.parent) == "":
+        # If no parent directory specified, use default
+        log_dir = Path("logs") / "claude_code" / args.run_id
+    else:
+        log_dir = log_fname_path.parent
+
+    log_dir.mkdir(parents=True, exist_ok=True)
     logger = setup_logging(args.run_id, log_dir)
 
     logger.info(f"Starting Claude Code evaluation run: {args.run_id}")
@@ -247,9 +293,12 @@ def main():
         tasks_run = 0
         tasks_skipped = 0
 
+        # Show current status
+        status = get_task_status_summary(log_dir)
         print(f"\n{'='*60}")
         print(f"Running Claude Code on ScienceAgentBench tasks")
         print(f"Max turns: {args.max_turns}, Timeout: {args.docker_timeout}s")
+        print(f"Previous status: {status['passed']} passed, {status['failed']} failed, {status['pending']} pending")
         print(f"{'='*60}\n")
 
         for idx, example in enumerate(tqdm(dataset, desc="Running Claude Code")):
@@ -259,30 +308,53 @@ def main():
             if instance_ids_set and instance_id not in instance_ids_set:
                 continue
 
-            # Resume check: skip if BOTH pred file AND eval result exist
+            # Resume check: skip if already completed
+            # When skip_evaluation is True, only check inference completion
             pred_fname = runner.get_pred_filename(example)
-            if check_resume_condition(pred_fname, instance_id, eval_logs):
+            skip_eval_check = args.skip_evaluation
+            if check_resume_condition(pred_fname, instance_id, eval_logs, skip_eval_check):
                 logger.info(f"Skipping {instance_id} - already completed")
                 tasks_skipped += 1
                 continue
+
+            # Also check per-task log for completion
+            if check_task_completed(log_dir, instance_id, require_eval=not args.skip_evaluation):
+                logger.info(f"Skipping {instance_id} - already completed (per-task check)")
+                tasks_skipped += 1
+                continue
+
+            # Save task info before running
+            save_task_info(log_dir, instance_id, example)
 
             # Run Claude Code on this task
             try:
                 result = runner.run_task(example)
                 run_logs[instance_id] = result
 
-                # Save log incrementally
+                # Save to per-task directory
+                save_inference_result(log_dir, instance_id, result)
+
+                # Save conversation log if available
+                debug_log = runner.pred_program_path.parent / "debug_logs" / instance_id / "conversation.log"
+                if debug_log.exists():
+                    save_conversation_log(log_dir, instance_id, debug_log.read_text())
+
+                # Save log incrementally to summary file
                 append_log(args.log_fname, instance_id, result)
                 tasks_run += 1
 
             except Exception as e:
                 logger.error(f"Error on {instance_id}: {e}")
-                error_result = {"error": str(e), "success": False}
+                error_result = {"instance_id": instance_id, "error": str(e), "success": False}
                 run_logs[instance_id] = error_result
+                save_inference_result(log_dir, instance_id, error_result)
                 append_log(args.log_fname, instance_id, error_result)
                 tasks_run += 1
 
+        # Show final status
+        final_status = get_task_status_summary(log_dir)
         logger.info(f"Inference complete: {tasks_run} tasks run, {tasks_skipped} skipped")
+        logger.info(f"Status: {final_status['passed']} passed, {final_status['failed']} failed")
 
     # Run evaluation phase
     if not args.skip_evaluation:
@@ -294,6 +366,14 @@ def main():
             instance_ids=args.instance_ids,
             max_workers=args.max_eval_workers,
         )
+
+        # Save evaluation results to per-task directories
+        logger.info("Saving evaluation results to per-task directories...")
+        _save_per_task_eval_results(args.eval_log_fname, log_dir, dataset)
+
+        # Show updated status after evaluation
+        final_status = get_task_status_summary(log_dir)
+        logger.info(f"Final status: {final_status['passed']} passed, {final_status['failed']} failed")
 
     logger.info("Done!")
     print(f"\n{'='*60}")

@@ -7,7 +7,8 @@ def evaluate_best_run(run_logs: List[List[Dict]], eval_logs: List[List[Dict]]):
     selected_run = []
     for i in range(len(run_logs[0])):
         task_traj_all = [r[i] for r in eval_logs]
-        task_cost = [r[i]["cost"] for r in run_logs]
+        # Handle missing cost field (e.g., Claude Code subscription)
+        task_cost = [r[i].get("cost", 0.0) for r in run_logs]
         for r, c in zip(task_traj_all, task_cost):
             r["cost"] = c
 

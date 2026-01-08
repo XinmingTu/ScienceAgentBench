@@ -226,8 +226,17 @@ class ClaudeCodeRunner:
         (workspace / "benchmark" / "datasets").mkdir(parents=True, exist_ok=True)
 
         # Extract dataset folder name from folder tree
-        folder_tree = example["dataset_folder_tree"]
-        dataset_name = folder_tree.split("\n")[0].strip("|-- ").rstrip("/")
+        folder_tree = example.get("dataset_folder_tree", "")
+        if not folder_tree or not folder_tree.strip():
+            raise ValueError(f"Missing or empty dataset_folder_tree for instance {example.get('instance_id', 'unknown')}")
+
+        # Parse first line, handle various formats:
+        # "dataset_name/", "|-- dataset_name/", "dataset_name"
+        first_line = folder_tree.split("\n")[0].strip()
+        dataset_name = first_line.strip("|-- ").strip("/").strip()
+
+        if not dataset_name:
+            raise ValueError(f"Could not extract dataset name from folder_tree: {folder_tree[:100]}")
 
         # Copy dataset files
         src_dataset = self.benchmark_path / "datasets" / dataset_name

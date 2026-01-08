@@ -52,19 +52,21 @@ def setup_logging(run_id: str, log_dir: Optional[Path] = None) -> logging.Logger
 
 
 def check_resume_condition(
-    pred_fname: Path, instance_id: str, eval_logs: Dict[str, dict]
+    pred_fname: Path, instance_id: str, eval_logs: Dict[str, dict],
+    skip_eval_check: bool = False
 ) -> bool:
     """
     Check if a task should be skipped (resume condition).
 
-    Returns True if BOTH:
-    1. Predicted program file exists and is not ERROR
-    2. Evaluation result exists for this instance
+    Returns True if:
+    1. Predicted program file exists and is not ERROR, AND
+    2. Either skip_eval_check is True OR evaluation result exists
 
     Args:
         pred_fname: Path to the predicted program file
         instance_id: Task instance ID
         eval_logs: Dictionary of evaluation results keyed by instance_id
+        skip_eval_check: If True, only check pred file (for --skip_evaluation mode)
 
     Returns:
         True if task should be skipped, False otherwise
@@ -73,9 +75,16 @@ def check_resume_condition(
     if not pred_fname.exists():
         return False
 
-    pred_content = pred_fname.read_text().strip()
-    if pred_content == "ERROR" or not pred_content:
+    try:
+        pred_content = pred_fname.read_text().strip()
+        if pred_content == "ERROR" or not pred_content:
+            return False
+    except Exception:
         return False
+
+    # If skip_eval_check, we only need successful inference
+    if skip_eval_check:
+        return True
 
     # Check if evaluation result exists
     if instance_id not in eval_logs:
@@ -252,3 +261,162 @@ def str2bool(v: str) -> bool:
         return False
     else:
         raise ValueError(f"Boolean value expected, got {v}")
+
+
+# ============================================================================
+# Per-task logging functions
+# ============================================================================
+
+def get_task_log_dir(log_dir: Path, instance_id: str) -> Path:
+    """Get the per-task log directory path."""
+    return log_dir / "tasks" / str(instance_id)
+
+
+def save_task_info(log_dir: Path, instance_id: str, example: dict):
+    """
+    Save task metadata to per-task directory.
+
+    Args:
+        log_dir: Base log directory
+        instance_id: Task instance ID
+        example: Task instance from dataset
+    """
+    task_dir = get_task_log_dir(log_dir, instance_id)
+    task_dir.mkdir(parents=True, exist_ok=True)
+
+    task_info = {
+        "instance_id": str(instance_id),
+        "domain": example.get("domain", "unknown"),
+        "task_inst": example.get("task_inst", ""),
+        "gold_program_name": example.get("gold_program_name", ""),
+        "output_fname": example.get("output_fname", ""),
+    }
+
+    with open(task_dir / "task_info.json", "w", encoding="utf-8") as f:
+        json.dump(task_info, f, indent=2)
+
+
+def save_inference_result(log_dir: Path, instance_id: str, result: dict):
+    """
+    Save inference result to per-task directory.
+
+    Args:
+        log_dir: Base log directory
+        instance_id: Task instance ID
+        result: Inference result dictionary
+    """
+    task_dir = get_task_log_dir(log_dir, instance_id)
+    task_dir.mkdir(parents=True, exist_ok=True)
+
+    with open(task_dir / "inference.json", "w", encoding="utf-8") as f:
+        json.dump(result, f, indent=2)
+
+
+def save_evaluation_result(log_dir: Path, instance_id: str, eval_result: dict):
+    """
+    Save evaluation result to per-task directory and create status marker.
+
+    Args:
+        log_dir: Base log directory
+        instance_id: Task instance ID
+        eval_result: Evaluation result dictionary
+    """
+    task_dir = get_task_log_dir(log_dir, instance_id)
+    task_dir.mkdir(parents=True, exist_ok=True)
+
+    with open(task_dir / "evaluation.json", "w", encoding="utf-8") as f:
+        json.dump(eval_result, f, indent=2)
+
+    # Create status marker file
+    success = eval_result.get("success_rate", 0) == 1
+    marker_file = task_dir / ("PASSED" if success else "FAILED")
+    marker_file.touch()
+
+    # Remove the other marker if it exists
+    other_marker = task_dir / ("FAILED" if success else "PASSED")
+    if other_marker.exists():
+        other_marker.unlink()
+
+
+def save_conversation_log(log_dir: Path, instance_id: str, conversation: str):
+    """
+    Save conversation log to per-task directory.
+
+    Args:
+        log_dir: Base log directory
+        instance_id: Task instance ID
+        conversation: Full conversation log
+    """
+    task_dir = get_task_log_dir(log_dir, instance_id)
+    task_dir.mkdir(parents=True, exist_ok=True)
+
+    with open(task_dir / "conversation.log", "w", encoding="utf-8") as f:
+        f.write(conversation)
+
+
+def check_task_completed(log_dir: Path, instance_id: str, require_eval: bool = False) -> bool:
+    """
+    Check if a task has already been completed.
+
+    Args:
+        log_dir: Base log directory
+        instance_id: Task instance ID
+        require_eval: If True, require evaluation to be complete
+
+    Returns:
+        True if task is complete, False otherwise
+    """
+    task_dir = get_task_log_dir(log_dir, instance_id)
+
+    # Check inference result
+    inference_file = task_dir / "inference.json"
+    if not inference_file.exists():
+        return False
+
+    try:
+        with open(inference_file, "r", encoding="utf-8") as f:
+            inference = json.load(f)
+        if not inference.get("success", False):
+            return False
+    except (json.JSONDecodeError, IOError):
+        return False
+
+    # If evaluation not required, inference success is enough
+    if not require_eval:
+        return True
+
+    # Check evaluation result
+    eval_file = task_dir / "evaluation.json"
+    return eval_file.exists()
+
+
+def get_task_status_summary(log_dir: Path) -> dict:
+    """
+    Get summary of task statuses.
+
+    Args:
+        log_dir: Base log directory
+
+    Returns:
+        Dictionary with counts of passed, failed, pending tasks
+    """
+    tasks_dir = log_dir / "tasks"
+    if not tasks_dir.exists():
+        return {"passed": 0, "failed": 0, "pending": 102, "total": 0}
+
+    passed = 0
+    failed = 0
+
+    for task_dir in tasks_dir.iterdir():
+        if task_dir.is_dir():
+            if (task_dir / "PASSED").exists():
+                passed += 1
+            elif (task_dir / "FAILED").exists():
+                failed += 1
+
+    return {
+        "passed": passed,
+        "failed": failed,
+        "pending": 102 - passed - failed,
+        "total": passed + failed,
+    }
