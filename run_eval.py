@@ -1,5 +1,6 @@
 from argparse import ArgumentParser
 from datasets import load_dataset
+from dotenv import load_dotenv
 from pathlib import Path
 from shutil import copyfile, rmtree
 from tqdm import tqdm
@@ -8,6 +9,9 @@ import code_bert_score
 import json
 import os
 import subprocess
+
+# Load environment variables from .env file
+load_dotenv()
 
 
 def config_conda_env():

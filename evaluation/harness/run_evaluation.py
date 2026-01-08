@@ -275,14 +275,20 @@ def main(
     if azure_openai_deployment_name == '':
         azure_openai_deployment_name = os.getenv("AZURE_OPENAI_DEPLOYMENT_NAME", '')
 
-    if openai_api_key == "":
+    # Check for visual judge API keys: GOOGLE_API_KEY (Gemini), OPENAI_API_KEY, or Azure OpenAI
+    google_api_key = os.getenv("GOOGLE_API_KEY", "")
+
+    if google_api_key:
+        # Using Gemini - no need for OpenAI/Azure
+        print("Using GOOGLE_API_KEY for visual judge (Gemini)")
+    elif openai_api_key == "":
         if (
             azure_openai_key == ""
             or azure_openai_endpoint == ""
             or azure_openai_api_version == ""
             or azure_openai_deployment_name == ""
         ):
-            raise ValueError("Please provide either OpenAI API key (OPENAI_API_KEY) or Azure OpenAI credentials (AZURE_OPENAI_KEY, AZURE_OPENAI_ENDPOINT, AZURE_OPENAI_API_VERSION, AZURE_OPENAI_DEPLOYMENT_NAME) as environment variables or command line arguments.")
+            raise ValueError("Please provide a visual judge API key: GOOGLE_API_KEY (Gemini), OPENAI_API_KEY, or Azure OpenAI credentials (AZURE_OPENAI_KEY, AZURE_OPENAI_ENDPOINT, AZURE_OPENAI_API_VERSION, AZURE_OPENAI_DEPLOYMENT_NAME) as environment variables or command line arguments.")
         else:
             os.environ["AZURE_OPENAI_KEY"] = azure_openai_key
             os.environ["AZURE_OPENAI_ENDPOINT"] = azure_openai_endpoint
