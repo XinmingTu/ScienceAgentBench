@@ -5,6 +5,7 @@ import json
 import platform
 from pathlib import Path
 import re
+import uuid
 
 from dataclasses import dataclass
 from typing import Any, Union, cast
@@ -83,9 +84,11 @@ class TestSpec:
         return f"sab.eval.{self.arch}.{self.instance_id}:latest"
 
     def get_instance_container_name(self, run_id=None):
+        # Add UUID suffix to ensure uniqueness during concurrent execution
+        unique_suffix = uuid.uuid4().hex[:8]
         if not run_id:
-            return f"sab.eval.{self.instance_id}"
-        return f"sab.eval.{self.instance_id}.{run_id}"
+            return f"sab.eval.{self.instance_id}.{unique_suffix}"
+        return f"sab.eval.{self.instance_id}.{run_id}.{unique_suffix}"
 
     @property
     def base_dockerfile(self):

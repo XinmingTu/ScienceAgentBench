@@ -70,6 +70,21 @@ RUN set -e; \
         sed -i '/iris/d' /testbed/instance_requirements.txt && \
         echo 'scitools-iris' >> /testbed/instance_requirements.txt; \
     fi; \
+    if echo "$extracted_pkgs" | grep -q 'skimage'; then \
+        sed -i '/skimage/d' /testbed/instance_requirements.txt && \
+        echo 'scikit-image' >> /testbed/instance_requirements.txt; \
+    fi; \
+    if grep -qE '^import umap|^from umap' /testbed/program_to_eval/*.py 2>/dev/null; then \
+        echo 'umap-learn' >> /testbed/instance_requirements.txt; \
+    fi; \
+    if echo "$extracted_pkgs" | grep -qE 'phonopy|seekpath'; then \
+        echo 'seekpath' >> /testbed/instance_requirements.txt; \
+    fi; \
+    if echo "$extracted_pkgs" | grep -qE 'xarray|netCDF4|iris'; then \
+        echo 'cftime' >> /testbed/instance_requirements.txt && \
+        echo 'netcdf4' >> /testbed/instance_requirements.txt && \
+        echo 'h5netcdf' >> /testbed/instance_requirements.txt; \
+    fi; \
     
     # for pkg in numpy scipy matplotlib torch tensorflow rdkit tf_keras; do \
     #     if ! echo "$extracted_pkgs" | grep -q "$pkg"; then \

@@ -89,7 +89,7 @@ After writing the code, verify:
 
 ## DATASET LOCATION (for exploration):
 {dataset_path}
-(Note: Use these paths to explore data. But in your final program, use /testbed/benchmark/datasets/... paths as specified above.)
+(Note: Use these paths for both exploration and in your final program.)
 
 ## DATASET STRUCTURE:
 ```
@@ -139,7 +139,7 @@ def format_task_prompt(
     )
 
 
-def format_task_prompt_from_example(example: dict, workspace_path: str = "/workspace") -> str:
+def format_task_prompt_from_example(example: dict, workspace_path: str = "/testbed") -> str:
     """
     Format the prompt from a HuggingFace dataset example.
 
@@ -168,8 +168,8 @@ def format_task_prompt_from_example(example: dict, workspace_path: str = "/works
     if not dataset_name:
         raise ValueError(f"Could not extract dataset name from folder tree: {folder_tree[:100]}")
 
-    # Construct paths relative to workspace (for exploration)
-    # Note: final program should use /testbed/... paths as specified in prompt
+    # Construct paths relative to workspace
+    # Both exploration and final program use /testbed/... paths
     dataset_path = f"{workspace_path}/benchmark/datasets/{dataset_name}"
     output_fname = example['output_fname']  # Just the relative path, prompt specifies /testbed prefix
 

@@ -36,7 +36,7 @@ class ClaudeCodeRunner:
     - Output extraction from files or code blocks
     """
 
-    WORKSPACE_PATH = "/workspace"
+    WORKSPACE_PATH = "/testbed"  # Must match evaluation container path
     CLAUDE_CONFIG_PATH = "/home/nonroot/.claude"  # Non-root user for --dangerously-skip-permissions
     DEFAULT_MAX_TURNS = 10
     DEFAULT_TIMEOUT = 1800  # 30 minutes
@@ -264,7 +264,7 @@ class ClaudeCodeRunner:
         Run Claude Code CLI inside Docker container.
 
         Mounts:
-        - workspace -> /workspace
+        - workspace -> /testbed
         - ~/.claude -> /root/.claude (authentication)
 
         Args:
@@ -282,7 +282,7 @@ class ClaudeCodeRunner:
             prompt_file.write_text(prompt)
 
             # Create container with volume mounts
-            # Note: Claude config is copied to workspace/.claude so set HOME=/workspace
+            # Note: Claude config is copied to workspace/.claude so set HOME=/testbed
             container = self.client.containers.create(
                 image=self.image_name,
                 command="tail -f /dev/null",  # Keep alive
@@ -296,7 +296,7 @@ class ClaudeCodeRunner:
                 },
                 working_dir=self.WORKSPACE_PATH,
                 environment={
-                    "HOME": self.WORKSPACE_PATH,  # So Claude finds config at /workspace/.claude
+                    "HOME": self.WORKSPACE_PATH,  # So Claude finds config at /testbed/.claude
                     "CI": "true",
                     "CLAUDE_DISABLE_TELEMETRY": "1",
                 },
